@@ -1,0 +1,20 @@
+PyTorch 데이터셋 폴더
+/data/
+
+시뮬레이션 로그 폴더
+/logs/
+
+Python 캐시 파일 및 폴더
+pycache/
+*.pyc
+*.pyo
+*.pyd
+
+가상환경 폴더
+.venv
+venv/
+ENV/
+env/
+
+vscode 설정 폴더
+/.vscode/
