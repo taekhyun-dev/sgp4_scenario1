@@ -6,7 +6,9 @@ from utils.skyfield_utils import EarthSatellite
 from utils.logging_setup import KST, setup_loggers
 from pathlib import Path
 from ml.data import get_cifar10_loaders
+from ml.model import PyTorchModel, create_mobilenet
 from config import NUM_CLIENTS, DIRICHLET_ALPHA, BATCH_SIZE, NUM_WORKERS
+from object.satellite import Satellite_Manager
 
 def load_constellation(tle_path: str, sim_logger) -> Dict[int, EarthSatellite]:
     """TLE 파일에서 위성군 정보를 불러오는 함수"""
@@ -20,6 +22,21 @@ def load_constellation(tle_path: str, sim_logger) -> Dict[int, EarthSatellite]:
             i += 3
     sim_logger.info(f"총 {len(satellites)}개의 위성을 TLE 파일에서 불러왔습니다.")
     return satellites
+
+def create_simulation_environment(eval_infra: dict):
+    sim_logger = eval_infra['sim_logger']
+    start_time = eval_infra['start_time']
+    end_time = eval_infra['end_time']
+
+    # TLE 데이터 로드
+    satellites = load_constellation("constellation.tle", sim_logger)
+
+    # 초기 글로벌 모델 생성
+    initial_pytorch_model = create_mobilenet()
+    initial_global_model = PyTorchModel(version=0, model_state_dict=initial_pytorch_model.state_dict())
+
+    sat_manager = Satellite_Manager(start_time, end_time, sim_logger, satellites)
+
 
 async def main():
     try:
