@@ -1,0 +1,26 @@
+.
+├── __pycache__
+├── _old
+│   └── sgp4_fl_minimum_ver2_sat_learning
+│       ├── __pycache__
+│       ├── data
+│       │   └── cifar-10-batches-py
+│       ├── logs
+│       │   └── plots
+│       ├── minimum_test
+│       │   └── __pycache__
+│       ├── ml
+│       │   └── __pycache__
+│       ├── simulation
+│       │   └── __pycache__
+│       └── utils
+│           └── __pycache__
+├── logs
+├── ml
+│   └── __pycache__
+├── object
+│   └── __pycache__
+└── utils
+    └── __pycache__
+
+23 directories

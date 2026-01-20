@@ -1,0 +1,74 @@
+# --- Python 기본 설정 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- 가상 환경 (Virtual Environment) ---
+# pyenv, venv, conda 환경 폴더 무시
+venv/
+env/
+.env
+.venv/
+.pyenv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- 데이터셋 (가장 중요) ---
+# ImageNet 데이터 구조 (ILSVRC) 및 다운로드 경로 무시
+ILSVRC/
+ImageSets/
+data/
+.data/
+*.tar
+*.tar.gz
+*.zip
+
+# --- 시뮬레이션 및 로깅 ---
+# 로그 파일 및 성능 기록
+*.log
+logs/
+performance_logs/
+
+# --- 머신러닝 모델 및 체크포인트 ---
+# 학습된 모델 가중치 파일 무시 (용량이 큼)
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+models/
+saved_models/
+
+# --- Skyfield / 위성 데이터 ---
+# TLE 파일 (필요에 따라 주석 해제하여 포함 가능)
+# 시나리오 설정 파일이라면 git에 포함해야 할 수도 있음
+# *.tle 
+
+# --- IDE 설정 파일 ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS 관련 ---
+.DS_Store
+Thumbs.db
