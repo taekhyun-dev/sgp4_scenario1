@@ -23,7 +23,7 @@ class PyTorchModel:
         state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
         return cls(version=version, model_state_dict=state_dict, trained_by=trained_by or [])
     
-def create_mobilenet(num_classes: int = 10, pretrained: bool = True, freeze_extractor: bool = False):
+def create_mobilenet(num_classes: int = 1000, pretrained: bool = True):
     if pretrained:
         # ImageNet 가중치 로드 (가장 좋은 가중치 자동 선택)
         weights = models.MobileNet_V3_Small_Weights.DEFAULT 
@@ -31,11 +31,14 @@ def create_mobilenet(num_classes: int = 10, pretrained: bool = True, freeze_extr
         weights = None
 
     model = models.mobilenet_v3_small(weights=weights)
-    
-    if pretrained and freeze_extractor:
-        for param in model.features.parameters():
-            param.requires_grad = False
-            
+
+    original_num_classes = model.classifier[3].out_features
+
+    if pretrained and num_classes == original_num_classes:
+        print(f"ℹ️ [Model] Pretrained Head 유지 (Kept original weights)")
+        return model
+
+    print(f"ℹ️ [Model] Head 교체 (Original: {original_num_classes} -> New: {num_classes})")
     in_features = model.classifier[3].in_features
     model.classifier[3] = nn.Linear(in_features, num_classes)
 

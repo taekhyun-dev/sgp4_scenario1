@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from datetime import datetime, timedelta
 from utils.skyfield_utils import EarthSatellite
-from utils.logging_setup import setup_loggers
+from utils.logging_setup import setup_loggers, KST
 from typing import Dict
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -17,11 +17,13 @@ from ml.training import train_model
 from ml.aggregation import calculate_mixing_weight, weighted_update
 
 class Satellite_Manager:
-    def __init__(self, start_time: datetime, end_time: datetime, sim_logger):
+    def __init__(self, start_time: datetime, end_time: datetime, sim_logger, perf_logger):
         self.start_time = start_time
         self.end_time = end_time
 
         self.sim_logger = sim_logger
+        self.perf_logger = perf_logger
+
         self.satellites:Dict[int, EarthSatellite] = {}
         self.satellite_models: Dict[int, PyTorchModel] = {}
         self.satellite_performances: Dict[int, float] = {}
@@ -176,7 +178,7 @@ class Satellite_Manager:
                 self.check_arr[sat_id].append(event)
                 self.sim_logger.info(f"  └─ #{i+1}: {start_time.strftime('%H:%M:%S')} ~ {end_time.strftime('%H:%M:%S')} ({duration} 유지)")
 
-    def _evaluate_direct(self, model, data_loader):
+    def _evaluate_direct(self, model, data_loader, sat_id, version, stage):
         """
         [최적화] 모델 재생성 없이 기존 모델 객체로 바로 평가
         (evaluate_model 함수를 호출하면 매번 create_mobilenet을 수행하므로 비효율적)
@@ -205,14 +207,16 @@ class Satellite_Manager:
         
         acc = 100 * correct / total
         avg_loss = total_loss / len(data_loader) if len(data_loader) > 0 else 0
-        
-        model.to('cpu') # 메모리 반환
+
+        self.perf_logger.info(
+            f"{datetime.now(KST).isoformat()},{stage},{sat_id},{version},N/A,{acc:.4f},{avg_loss:.6f},0.0000"
+        )
         return acc, avg_loss
 
     async def manage_fl_process(self):
         self.sim_logger.info("\n=== 연합 학습 시뮬레이션 시작 ===")
         
-        temp_model = create_mobilenet(num_classes=self.NUM_CLASSES, pretrained=False)
+        temp_model = create_mobilenet(num_classes=self.NUM_CLASSES, pretrained=True)
 
         for sat_id in self.satellites.keys():
             events = self.check_arr[sat_id]
@@ -237,7 +241,7 @@ class Satellite_Manager:
 
                     train_loader = DataLoader(
                             dataset, batch_size=64, shuffle=True, 
-                            num_workers=4, pin_memory=True, persistent_workers=False # 일회용이므로 False 추천
+                            num_workers=0, pin_memory=True, persistent_workers=False # 일회용이므로 False 추천
                     )
 
                     current_local_wrapper.to_device(temp_model, device='cpu')
@@ -252,7 +256,13 @@ class Satellite_Manager:
                         sim_logger=self.sim_logger # 로거 전달
                     )
 
-                    acc, loss = self._evaluate_direct(temp_model, self.val_loader)
+                    acc, loss = self._evaluate_direct(
+                        temp_model, 
+                        self.val_loader, 
+                        sat_id=sat_id, 
+                        version=current_local_wrapper.version + 0.1, # 예측되는 새 버전
+                        stage="LOCAL_TRAIN"
+                    )
                     self.satellite_performances[sat_id] = acc # 성능 기록
 
                     # 학습된 상태 저장 (GPU -> CPU)
@@ -304,12 +314,43 @@ class Satellite_Manager:
                     temp_model.load_state_dict(new_state_dict)
 
                     # 글로벌 모델 평가
-                    g_acc, g_loss = self._evaluate_direct(temp_model, self.val_loader)
+                    g_acc, g_loss = self._evaluate_direct(
+                        temp_model, 
+                        self.val_loader,
+                        sat_id="GS",     # 지상국(Global) 표시
+                        version=new_version,
+                        stage="GLOBAL_TEST"
+                    )
 
                     # 최고 성능 갱신 여부 확인
                     if g_acc > self.best_acc:
+                        previous_best = self.best_acc
                         self.best_acc = g_acc
                         # (선택) 모델 파일 저장 로직 추가 가능
+
+                        # [추가됨] 1. 저장 디렉토리 생성
+                        save_dir = Path("./checkpoints")
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # [추가됨] 2. 파일명 설정 (예: global_v1_acc75.23.pth)
+                        filename = f"global_v{new_version}_acc{g_acc:.2f}.pth"
+                        save_path = save_dir / filename
+                        
+                        # [추가됨] 3. 체크포인트 딕셔너리 구성
+                        # 나중에 resume하거나 분석할 때 필요한 정보들을 함께 저장합니다.
+                        checkpoint = {
+                            'model_state_dict': new_state_dict,  # 모델 가중치
+                            'version': new_version,              # 모델 버전
+                            'accuracy': g_acc,                   # 달성 정확도
+                            'loss': g_loss,                      # 달성 Loss
+                            'timestamp': datetime.now().isoformat(), # 저장 시간
+                            'description': f"Best Global Model at Round {new_version}"
+                        }
+                        
+                        # [추가됨] 4. 파일 저장
+                        torch.save(checkpoint, save_path)
+                        
+                        self.sim_logger.info(f"💾 [Save] New Best Model Saved! ({previous_best:.2f}% -> {self.best_acc:.2f}%) Path: {save_path}")
 
                     # Global Wrapper 갱신
                     self.global_model_wrapper = PyTorchModel(
@@ -320,7 +361,7 @@ class Satellite_Manager:
                     # 메모리상의 메인 모델 객체도 동기화 (다음 다운로드를 위해)
                     self.global_model_net.load_state_dict(new_state_dict)
 
-                    print(f"⚡ [GS Aggregation] SAT_{sat_id} (Alpha: {alpha:.4f}) -> Global v{new_version} (Acc: {g_acc:.2f}%)")
+                    self.sim_logger.info(f"⚡ [GS Aggregation] SAT_{sat_id} (Alpha: {alpha:.4f}) -> Global v{new_version} (Acc: {g_acc:.2f}%)")
                     
                     # Aggregation 후, 위성도 최신 글로벌 모델로 업데이트 (동기화)
                     current_local_wrapper = PyTorchModel.from_model(temp_model, version=new_version)
@@ -333,7 +374,7 @@ def main():
     try:
         start_time = datetime.now(timezone.utc)
         sim_logger, perf_logger = setup_loggers()
-        sat_manager = Satellite_Manager(start_time, start_time + timedelta(days=1),sim_logger)
+        sat_manager = Satellite_Manager(start_time, start_time + timedelta(days=1),sim_logger, perf_logger)
         asyncio.run(sat_manager.run())
     except KeyboardInterrupt:
         sim_logger.info("\n시뮬레이션을 종료합니다.")

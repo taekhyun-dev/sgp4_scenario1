@@ -49,10 +49,13 @@ def setup_loggers():
         perf_logger.handlers.clear()
         
     perf_logger.setLevel(logging.INFO)
+
     perf_handler = logging.FileHandler(log_dir / f"performance_{timestamp}.csv", mode='w')
+    perf_formatter = KSTFormatter('%(asctime)s - %(message)s', '%Y-%m-%d %H:%M:%S')
     
     # CSV 헤더 작성
     perf_handler.stream.write("timestamp,event_type,owner_id,model_version,cluster_version,accuracy,loss,miou\n")
+    perf_logger.setFormatter(perf_formatter)
     perf_logger.addHandler(perf_handler)
     
     # 전파 방지
