@@ -1,119 +1,98 @@
 import torch
 import numpy as np
-import pandas as pd
+import torchvision.transforms as transforms
+from torchvision import datasets
+from torch.utils.data import DataLoader, Subset
+from collections import Counter
 import os
-from torchvision import transforms, datasets
-from torch.utils.data import DataLoader, Subset, Dataset
 
-# TransformedSubset 클래스는 그대로 유지
-class TransformedSubset(Dataset):
-    def __init__(self, subset, transform=None):
-        self.subset = subset
-        self.transform = transform
-
-    def __getitem__(self, index):
-        x, y = self.subset[index]
-        if self.transform:
-            x = self.transform(x)
-        return x, y
-
-    def __len__(self):
-        return len(self.subset)
-
-def get_imagenet_loaders(num_clients, dirichlet_alpha, batch_size=128, data_root='../.data/imagenet/ILSVRC/Data/CLS-LOC', num_workers=4):
+def get_cifar10_loaders(num_clients: int, dirichlet_alpha: float = 0.5, 
+                        data_root: str = './data', batch_size_val: int = 256, num_workers: int = 8):
     """
-    ImageNet (또는 ImageFolder 구조의 데이터셋) 로드 함수
+    CIFAR-10 데이터셋을 다운로드하고 Dirichlet 분포(Non-IID)에 따라 클라이언트별로 분할합니다.
+    """
     
-    Args:
-        data_root (str): 'train'과 'val' 폴더가 들어있는 루트 경로
-    """
-    abs_data_root = os.path.abspath(data_root)
+    # 1. CIFAR-10 전용 정규화 값 (Mean, Std)
+    CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
+    CIFAR_STD  = (0.2023, 0.1994, 0.2010)
 
-    # 1. Transform 정의 (ImageNet 표준)
-    # ImageNet은 이미지가 크기 때문에 224x224 리사이즈가 필수입니다.
-    imagenet_mean = (0.485, 0.456, 0.406)
-    imagenet_std = (0.229, 0.224, 0.225)
-    size = 224
-
+    # 2. 전처리 파이프라인 정의 (Resizing 제거 -> 32x32 원본 사용)
     transform_train = transforms.Compose([
-        transforms.Resize((256, 256)), # 먼저 조금 크게 리사이즈
-        transforms.RandomCrop(size),   # 224로 랜덤 크롭
-        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(32, padding=4), # 데이터 증강
+        transforms.RandomHorizontalFlip(),    # 데이터 증강
         transforms.ToTensor(),
-        transforms.Normalize(imagenet_mean, imagenet_std)
+        transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
     ])
 
     transform_test = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.CenterCrop(size),   # 중앙 크롭
         transforms.ToTensor(),
-        transforms.Normalize(imagenet_mean, imagenet_std)
+        transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
     ])
 
-    # 2. 데이터셋 로드 (ImageFolder 사용)
-    train_dir = os.path.join(abs_data_root, 'train')
-    val_dir = os.path.join(abs_data_root, 'val')
-
-    if not os.path.exists(train_dir):
-        print(f"❌ Error: {train_dir} not found. Please check your data path.")
-        # 경로가 틀렸을 경우를 대비해 빈 값 반환
-        return 0, [], None, transform_train
-
-    # Raw Data 로드 (Transform은 나중에 적용)
-    raw_train_dataset = datasets.ImageFolder(root=train_dir, transform=None)
+    print(f"📥 [Data] CIFAR-10 데이터셋 로드 중... (Root: {data_root})")
     
-    val_loader = None
-    if os.path.exists(val_dir):
-        test_dataset = datasets.ImageFolder(root=val_dir, transform=transform_test)
-        # 검증용은 워커 조금만 써도 됨
-        val_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2, pin_memory=True)
+    # 3. 데이터셋 다운로드 및 로드
+    # (최초 실행 시 자동으로 다운로드 됩니다)
+    train_dataset = datasets.CIFAR10(root=data_root, train=True, download=True, transform=transform_train)
+    test_dataset = datasets.CIFAR10(root=data_root, train=False, download=True, transform=transform_test)
 
-    # 3. Non-IID Dirichlet 분할 로직
-    # ImageFolder는 .targets 속성에 정답(int) 리스트를 가지고 있음
-    num_total = len(raw_train_dataset)
-    targets = np.array(raw_train_dataset.targets) # List -> Numpy 변환 필수
-    num_classes = len(raw_train_dataset.classes)  # 클래스 개수 자동 감지
-
-    idxs_per_class = {k: np.where(targets == k)[0] for k in range(num_classes)}
-
-    min_size = 0
-    client_data_indices = [[] for _ in range(num_clients)]
-
-    print(f"Partitioning data... (Classes: {num_classes}, Samples: {num_total})")
-
-    # 데이터 분할 루프 (이전과 동일 로직)
-    while min_size < 10:
-        client_data_indices = [[] for _ in range(num_clients)]
+    # 4. Dirichlet 분포를 이용한 Non-IID 데이터 분할
+    print(f"⚖️ [Data] Dirichlet 분포(alpha={dirichlet_alpha})로 데이터 분할 중...")
+    
+    targets = np.array(train_dataset.targets) # 레이블 목록
+    num_classes = 10
+    
+    # 각 클라이언트가 가질 데이터 인덱스 리스트
+    client_indices = [[] for _ in range(num_clients)]
+    
+    # 클래스별로 순회하며 분배
+    for k in range(num_classes):
+        # 해당 클래스(k)를 가진 데이터의 인덱스들만 추출
+        idx_k = np.where(targets == k)[0]
+        np.random.shuffle(idx_k)
         
-        for k in range(num_classes):
-            idx_k = idxs_per_class[k]
-
-            np.random.shuffle(idx_k)
-            
-            proportions = np.random.dirichlet(np.repeat(dirichlet_alpha, num_clients))
-            proportions = np.array([p * (len(idx_k) < num_clients and 1 / num_clients or p) for p in proportions])
-            proportions = proportions / proportions.sum()
-            proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
-            
-            split_idx = np.split(idx_k, proportions)
-            
-            for i in range(num_clients):
-                client_data_indices[i].extend(split_idx[i])
+        # Dirichlet 분포로 비율 생성
+        proportions = np.random.dirichlet(np.repeat(dirichlet_alpha, num_clients))
         
-        min_size = min([len(idx) for idx in client_data_indices])
-        if min_size < 10:
-            print("  - Re-partitioning due to small client size...")
+        # 비율을 정규화하여 개수 부족 문제 방지 (아주 적은 경우 보정)
+        proportions = np.array([p * (len(idx_k) < num_clients / 10.0 and 1.0 / num_clients or 1) for p in proportions])
+        proportions = proportions / proportions.sum()
+        proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
+        
+        # 분할된 인덱스를 각 클라이언트에게 할당
+        split_indices = np.split(idx_k, proportions)
+        for i in range(num_clients):
+            client_indices[i].extend(split_indices[i])
 
-    # 4. DataLoader 생성
+    # 5. Subset 생성 및 데이터 통계 계산
     client_subsets = []
+    total_data_count = 0
     
-    for indices in client_data_indices:
-        client_subset_raw = Subset(raw_train_dataset, indices)
-        # Transform을 적용한 Wrapper Dataset 생성
-        client_dataset = TransformedSubset(client_subset_raw, transform=transform_train)
-        client_subsets.append(client_dataset)
+    for i in range(num_clients):
+        # 인덱스 셔플 (클래스별로 뭉쳐있지 않게)
+        np.random.shuffle(client_indices[i])
+        subset = Subset(train_dataset, client_indices[i])
+        client_subsets.append(subset)
+        total_data_count += len(client_indices[i])
 
-    avg_data_count = num_total / num_clients
-    print(f"✅ Created {num_clients} client datasets. (Avg: {avg_data_count:.1f} samples)")
+    avg_data_count = total_data_count / num_clients
 
-    return avg_data_count, client_subsets, val_loader, transform_train
+    # 6. Global Validation Loader 생성
+    # 검증은 배치 사이즈를 크게(256), 워커도 넉넉하게(8) 설정하여 속도 최적화
+    val_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size_val, 
+        shuffle=False, 
+        num_workers=num_workers, 
+        pin_memory=True
+    )
+
+    # (디버깅) 분할 결과 요약 출력 (첫 5개 위성만)
+    print(f"📊 분할 완료: 총 {total_data_count}개 학습 데이터 (위성당 평균 {avg_data_count:.1f}개)")
+    for i in range(min(5, num_clients)):
+        indices = client_indices[i]
+        labels = [targets[idx] for idx in indices]
+        counts = Counter(labels)
+        print(f"  - SAT_{i}: {len(indices)} samples {dict(sorted(counts.items()))}")
+
+    return avg_data_count, client_subsets, val_loader, train_dataset.classes
