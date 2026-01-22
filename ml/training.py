@@ -9,7 +9,7 @@ from config import FEDPROX_MU
 
 IMAGENET_CLASSES = 1000
 
-def train_model(model, global_state_dict, train_loader, epochs=1, lr=0.01, device='cuda', sim_logger=None):
+def train_model(model, global_state_dict, train_loader, epochs, lr, device='cuda', sim_logger=None):
         """
         실제 PyTorch 모델 학습을 수행하는 블로킹(동기) 함수.
         asyncio 이벤트 루프를 막지 않기 위해 별도의 스레드에서 실행됩니다.
@@ -26,6 +26,9 @@ def train_model(model, global_state_dict, train_loader, epochs=1, lr=0.01, devic
         # --- 학습 파트 ---
         model.to(device)
         model.train()
+        
+        for param in model.features.parameters():
+            param.requires_grad = False
 
         # [FedProx] 비교용 글로벌 모델 (Gradient 불필요)
         # 메모리 절약을 위해 with torch.no_grad() 안에서 생성하거나 필요할 때만 로드

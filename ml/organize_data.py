@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 # ==========================================
 # ⚠️ 본인의 val 폴더 경로가 맞는지 다시 한 번 확인해주세요!
-VAL_DIR = "/home/taekhyun/.data/imagenet/ILSVRC/Data/CLS-LOC/val"
+VAL_DIR = "/home/octolab-rtx4090/.data/imagenet/ILSVRC/Data/CLS-LOC/val"
 # ==========================================
 
 def organize_validation_set(val_dir):

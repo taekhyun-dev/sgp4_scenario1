@@ -20,7 +20,7 @@ class TransformedSubset(Dataset):
     def __len__(self):
         return len(self.subset)
 
-def get_imagenet_loaders(num_clients, dirichlet_alpha, batch_size=128, data_root='../.data/imagenet/ILSVRC/Data/CLS-LOC', num_workers=4):
+def get_imagenet_loaders(num_clients, dirichlet_alpha, batch_size=128, data_root='../../../.data/imagenet/ILSVRC/Data/CLS-LOC', num_workers=4):
     """
     ImageNet (또는 ImageFolder 구조의 데이터셋) 로드 함수
     
@@ -66,7 +66,7 @@ def get_imagenet_loaders(num_clients, dirichlet_alpha, batch_size=128, data_root
     if os.path.exists(val_dir):
         test_dataset = datasets.ImageFolder(root=val_dir, transform=transform_test)
         # 검증용은 워커 조금만 써도 됨
-        val_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2, pin_memory=True)
+        val_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=8, pin_memory=True)
 
     # 3. Non-IID Dirichlet 분할 로직
     # ImageFolder는 .targets 속성에 정답(int) 리스트를 가지고 있음
