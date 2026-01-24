@@ -216,7 +216,7 @@ class Satellite_Manager:
     async def manage_fl_process(self):
         self.sim_logger.info("\n=== 연합 학습 시뮬레이션 시작 (Time-Ordered) SYNC WAY ===")
 
-        MIN_PARTICIPANTS = 10
+        MIN_PARTICIPANTS = 50
 
         agg_buffer: Dict[int, dict] = {}
         sat_status = defaultdict(lambda: 'IDLE')
