@@ -228,6 +228,7 @@ class Satellite_Manager:
         
         # 2. 시작 시간 기준으로 전체 정렬
         all_events.sort(key=lambda x: x['start_time'])
+        [self.sim_logger.info(i) for i in all_events]
         
         self.sim_logger.info(f"📅 총 {len(all_events)}개의 이벤트가 시간순으로 정렬되었습니다.")
         
@@ -263,7 +264,7 @@ class Satellite_Manager:
                     global_state_dict=self.global_model_wrapper.model_state_dict,
                     train_loader=train_loader, 
                     epochs=epochs, 
-                    lr=0.001,  # <--- ResNet9 Scratch 학습용 LR (Adam 기본값)
+                    lr=0.005,  # <--- ResNet9 Scratch 학습용 LR (Adam 기본값)
                     device=self.device,
                     sim_logger=self.sim_logger
                 )
@@ -293,7 +294,7 @@ class Satellite_Manager:
 
                 # [정책] 글로벌 모델 버전 차이가 1.0 이상이면 그냥 다운로드 (동기화)
                 # ResNet9은 학습이 빠르므로 너무 오래된 모델은 병합하지 않고 덮어씁니다.
-                if self.global_model_wrapper.version > current_local_wrapper.version + 1.0:
+                if self.global_model_wrapper.version > current_local_wrapper.version + 5.0:
                     current_local_wrapper = PyTorchModel.from_model(
                         self.global_model_net, 
                         version=self.global_model_wrapper.version
@@ -315,6 +316,8 @@ class Satellite_Manager:
                     local_data_count=local_data_count,
                     avg_data_count=self.avg_data_count
                 )
+
+                alpha = 0.2
 
                 new_state_dict = weighted_update(
                     self.global_model_wrapper.model_state_dict,
@@ -378,7 +381,7 @@ def main():
         start_time = datetime.now(timezone.utc)
         sim_logger, perf_logger = setup_loggers()
         # 14일 시뮬레이션
-        sat_manager = Satellite_Manager(start_time, start_time + timedelta(days=14), sim_logger, perf_logger)
+        sat_manager = Satellite_Manager(start_time, start_time + timedelta(days=30), sim_logger, perf_logger)
         asyncio.run(sat_manager.run())
     except KeyboardInterrupt:
         print("\n시뮬레이션을 종료합니다.")

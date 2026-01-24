@@ -4,10 +4,11 @@ import torch
 import torch.nn as nn
 import torch.optim.lr_scheduler as lr_scheduler
 from torch.amp import autocast, GradScaler
-from .model import create_mobilenet
+from .model import create_mobilenet, create_resnet9
 from config import FEDPROX_MU
 
 IMAGENET_CLASSES = 1000
+CIFAR_CLASSES = 10
 
 def train_model(model, global_state_dict, train_loader, epochs=1, lr=0.01, device='cuda', sim_logger=None):
         """
@@ -29,7 +30,7 @@ def train_model(model, global_state_dict, train_loader, epochs=1, lr=0.01, devic
 
         # [FedProx] 비교용 글로벌 모델 (Gradient 불필요)
         # 메모리 절약을 위해 with torch.no_grad() 안에서 생성하거나 필요할 때만 로드
-        global_model = create_mobilenet(num_classes=IMAGENET_CLASSES, pretrained=True)
+        global_model = create_resnet9(num_classes=CIFAR_CLASSES)
         global_model.load_state_dict(global_state_dict)
         global_model.to(device)
         global_model.eval() # 중요: gradient가 흐르지 않도록 설정
@@ -90,7 +91,7 @@ def train_model(model, global_state_dict, train_loader, epochs=1, lr=0.01, devic
 
 def evaluate_model(model_state_dict, data_loader, device):
     """주어진 모델 가중치와 데이터로더로 정확도와 손실을 평가"""
-    model = create_mobilenet(num_classes=IMAGENET_CLASSES, pretrained=True)
+    model = create_resnet9(num_classes=CIFAR_CLASSES)
     model.load_state_dict(model_state_dict)
     model.to(device)
     model.eval()

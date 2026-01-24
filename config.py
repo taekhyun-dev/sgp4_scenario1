@@ -1,7 +1,7 @@
 # 시뮬레이션 전반에 사용되는 설정값들을 정의하는 파일입니다.
 
 # --- Satellite Local Training Settings ---
-LOCAL_EPOCHS = 1              # 각 위성이 로컬 학습을 수행할 에포크 수
+LOCAL_EPOCHS = 10              # 각 위성이 로컬 학습을 수행할 에포크 수
 FEDPROX_MU = 0.01             # FedProx 하이퍼파라미터 (mu)
 
 # --- Ground Station & IoT Settings ---

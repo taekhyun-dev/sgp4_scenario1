@@ -55,7 +55,7 @@ def setup_loggers():
     
     # CSV 헤더 작성
     perf_handler.stream.write("timestamp,event_type,owner_id,model_version,cluster_version,accuracy,loss,miou\n")
-    perf_logger.setFormatter(perf_formatter)
+    perf_handler.setFormatter(perf_formatter)
     perf_logger.addHandler(perf_handler)
     
     # 전파 방지
