@@ -21,7 +21,7 @@ def setup_loggers():
     """시뮬레이션 및 성능 로그를 설정하고 로거 객체를 반환"""
     # 로그 파일 이름에 타임스탬프 추가 (KST 기준)
     timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
-    log_dir = Path("logs")
+    log_dir = Path("logs/cifar_sync")
     log_dir.mkdir(exist_ok=True)
 
     # --- 일반 시뮬레이션 로거 설정 ---
