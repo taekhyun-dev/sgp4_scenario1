@@ -39,7 +39,6 @@ class Satellite_Manager:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.num_satellites = 50
         
-        # [수정] CIFAR-10 클래스 수
         self.NUM_CLASSES = 10 
 
         self.sim_logger.info("CIFAR-10 데이터셋 로드 및 분할 중...")
@@ -53,7 +52,6 @@ class Satellite_Manager:
         self.sim_logger.info(f"데이터셋 로드 완료. 위성당 평균 데이터 수: {self.avg_data_count:.1f}")
 
         # 2. 글로벌 모델 초기화 (ResNet-9, Scratch Learning)
-        # CIFAR-10은 작아서 Pretrained 없이 처음부터 학습해도 금방 90% 갑니다.
         self.global_model_net = create_resnet9(num_classes=self.NUM_CLASSES)
         self.global_model_net.to('cpu') 
 
@@ -102,7 +100,6 @@ class Satellite_Manager:
         self.sim_logger.info("모든 시뮬레이션 종료.")
 
     async def propagate_orbit(self, start_time, end_time):
-        # [최적화] step을 10초로 유지 (너무 크면 통신 놓침, 너무 작으면 느림)
         step = timedelta(seconds=10)
         self.times = []
         curr = start_time
@@ -217,7 +214,12 @@ class Satellite_Manager:
         return acc, avg_loss
 
     async def manage_fl_process(self):
-        self.sim_logger.info("\n=== 연합 학습 시뮬레이션 시작 (Time-Ordered) ===")
+        self.sim_logger.info("\n=== 연합 학습 시뮬레이션 시작 (Time-Ordered) SYNC WAY ===")
+
+        MIN_PARTICIPANTS = 10
+
+        agg_buffer: Dict[int, dict] = {}
+        sat_status = defaultdict(lambda: 'IDLE')
         
         # 1. 모든 위성의 이벤트를 하나로 모으기 (Time-Ordered Execution)
         all_events = []
@@ -232,12 +234,13 @@ class Satellite_Manager:
         
         self.sim_logger.info(f"📅 총 {len(all_events)}개의 이벤트가 시간순으로 정렬되었습니다.")
         
-        # [수정] ResNet-9 임시 모델 생성 (빈 껍데기)
+        # 초기 모델 (ResNet-9)
         temp_model = create_resnet9(num_classes=self.NUM_CLASSES)
 
         for i, event in enumerate(all_events):
             sat_id = event['sat_id']
             current_local_wrapper = self.satellite_models[sat_id]
+            global_version = self.global_model_wrapper.version
             
             if event['type'] == 'IOT_TRAIN':
                 self.sim_logger.info(f"\n📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} : IoT 학습 시작")
@@ -292,89 +295,129 @@ class Satellite_Manager:
             elif event['type'] == 'GS_AGGREGATE':
                 self.sim_logger.info(f"\n📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} : 지상국 접속")
 
-                # [정책] 글로벌 모델 버전 차이가 1.0 이상이면 그냥 다운로드 (동기화)
-                # ResNet9은 학습이 빠르므로 너무 오래된 모델은 병합하지 않고 덮어씁니다.
-                if self.global_model_wrapper.version > current_local_wrapper.version + 5.0:
+                # Case A: 학습된 모델이 있어서 제출(Upload) 하러 옴
+                # 조건: 상태가 TRAINED이고, 가지고 있는 모델이 현재 글로벌 모델(의 파생)일 때
+                if sat_status[sat_id] == 'TRAINED' and current_local_wrapper.version == global_version:
+                    self.sim_logger.info(f"   ⬆️ [SAT_{sat_id}] Uploading model to buffer...")
+
+                    # 버퍼에 추가 (이미 제출했으면 덮어쓰기)
+                    agg_buffer[sat_id] = {k: v.cpu() for k, v in current_local_wrapper.model_state_dict.items()}
+
+                    # 상태 변경: 제출했으므로 다시 대기 상태 (다음 라운드 기다림)
+                    sat_status[sat_id] = 'IDLE'
+
+                    # 버퍼가 꽉 찼는지 확인 (Aggregation Trigger)
+                    if len(agg_buffer) >= MIN_PARTICIPANTS:
+                        self.sim_logger.info(f"\n⚡ [Sync Aggregation] {len(agg_buffer)} models collected! Updating Global Model v{int(global_version)} -> v{int(global_version)+1}")
+                        
+                        # 1. FedAvg (평균) - 직접 평균 계산
+                        new_global_state = self.global_model_wrapper.model_state_dict.copy()
+                        for key in new_global_state.keys():
+                            if new_global_state[key].dtype == torch.float32:
+                                # 버퍼에 있는 모든 모델의 해당 파라미터 스택
+                                stack = torch.stack([m[key] for m in agg_buffer.values()])
+                                # 평균 계산 (dim=0)
+                                new_global_state[key] = torch.mean(stack, dim=0)
+                        
+                        # 2. 글로벌 모델 업데이트
+                        new_version = global_version + 1.0
+                        self.global_model_wrapper = PyTorchModel(
+                            version=new_version,
+                            model_state_dict=new_global_state,
+                            trained_by=list(agg_buffer.keys())
+                        )
+                        self.global_model_net.load_state_dict(new_global_state)
+                        
+                        # 3. 평가 및 저장
+                        g_acc, g_loss = self._evaluate_direct(
+                            self.global_model_net, self.val_loader, sat_id="GS", version=new_version, stage="GLOBAL_TEST"
+                        )
+                        
+                        if g_acc > self.best_acc:
+                            self.best_acc = g_acc
+                            save_dir = Path("./checkpoints")
+                            save_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            filename = f"sync_global_v{int(new_version)}_acc{g_acc:.2f}.pth"
+                            save_path = save_dir / filename
+                            
+                            checkpoint = {
+                                'model_state_dict': new_global_state,
+                                'version': new_version,
+                                'accuracy': g_acc,
+                                'timestamp': datetime.now().isoformat(),
+                                'round': new_version
+                            }
+                            torch.save(checkpoint, save_path)
+                            self.sim_logger.info(f"   💾 [Save] New Best Model! ({self.best_acc:.2f}%)")
+                        
+                        self.sim_logger.info(f"   📢 Global Round {int(new_version)} Finished. Acc: {g_acc:.2f}%\n")
+                        
+                        # 4. 버퍼 초기화 (다음 라운드 시작)
+                        agg_buffer.clear()
+
+                # Case B: 글로벌 모델이 더 최신임 -> 다운로드 (Download)
+                # 방금 Aggregation이 일어나서 버전이 올랐거나, 아직 구버전인 경우
+                if self.global_model_wrapper.version > current_local_wrapper.version:
                     current_local_wrapper = PyTorchModel.from_model(
-                        self.global_model_net, 
-                        version=self.global_model_wrapper.version
+                        self.global_model_net, version=self.global_model_wrapper.version
                     )
                     self.satellite_models[sat_id] = current_local_wrapper
-                    self.sim_logger.info(f"   📥 Global Model Downloaded (v{self.global_model_wrapper.version})")
-                    continue 
+                    sat_status[sat_id] = 'IDLE' # 다운로드 받았으니 이제 학습 준비 완료
+                    self.sim_logger.info(f"   📥 [SAT_{sat_id}] Downloaded Global v{self.global_model_wrapper.version:.0f}")
 
-                # Aggregation 진행
-                local_acc = self.satellite_performances[sat_id]
-                loader_idx = sat_id % len(self.client_subsets)
-                local_data_count = len(self.client_subsets[loader_idx])
-
-                alpha, _, _, _ = calculate_mixing_weight(
-                    local_ver=current_local_wrapper.version,
-                    global_ver=self.global_model_wrapper.version,
-                    local_acc=local_acc,
-                    global_acc=self.best_acc,
-                    local_data_count=local_data_count,
-                    avg_data_count=self.avg_data_count
-                )
-
-                alpha = 0.2
-
-                new_state_dict = weighted_update(
-                    self.global_model_wrapper.model_state_dict,
-                    current_local_wrapper.model_state_dict,
-                    alpha
-                )
-
-                # 글로벌 버전 업데이트 (정수 단위)
-                new_version = int(self.global_model_wrapper.version) + 1.0
-
-                temp_model.load_state_dict(new_state_dict)
-
-                g_acc, g_loss = self._evaluate_direct(
-                    temp_model, 
-                    self.val_loader,
-                    sat_id="GS",     
-                    version=new_version,
-                    stage="GLOBAL_TEST"
-                )
-
-                if g_acc > self.best_acc:
-                    previous_best = self.best_acc
-                    self.best_acc = g_acc
+            # -----------------------------------------------------------
+            # [이벤트 2] IoT 데이터 학습 (Local Training)
+            # -----------------------------------------------------------
+            elif event['type'] == 'IOT_TRAIN':
+                # 조건: 현재 글로벌 모델과 버전이 같고, 아직 학습하지 않은 상태여야 함
+                # (동기식이므로 한 라운드에 한 번만 학습)
+                if current_local_wrapper.version == self.global_model_wrapper.version and sat_status[sat_id] == 'IDLE':
                     
-                    save_dir = Path("./checkpoints")
-                    save_dir.mkdir(parents=True, exist_ok=True)
+                    self.sim_logger.info(f"\n📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} Local Training (Round {int(current_local_wrapper.version)})")
                     
-                    filename = f"global_v{int(new_version)}_acc{g_acc:.2f}.pth"
-                    save_path = save_dir / filename
+                    # 학습 설정
+                    epochs = 5  # 로컬 에포크 (CIFAR-10 동기식은 5~10회 추천)
+                    loader_idx = sat_id % len(self.client_subsets)
+                    dataset = self.client_subsets[loader_idx]
                     
-                    checkpoint = {
-                        'model_state_dict': new_state_dict,
-                        'version': new_version,
-                        'accuracy': g_acc,
-                        'loss': g_loss,
-                        'timestamp': datetime.now().isoformat(),
-                        'description': f"Best Global Model (ResNet9) at Round {new_version}"
-                    }
-                    torch.save(checkpoint, save_path)
-                    self.sim_logger.info(f"   💾 [Save] New Best Model! ({previous_best:.2f}% -> {self.best_acc:.2f}%)")
-
-                # Global Wrapper 갱신
-                self.global_model_wrapper = PyTorchModel(
-                    version=new_version,
-                    model_state_dict=new_state_dict, 
-                    trained_by=self.global_model_wrapper.trained_by + [sat_id]
-                )
-                self.global_model_net.load_state_dict(new_state_dict)
-
-                self.sim_logger.info(f"   ⚡ [Aggregation] SAT_{sat_id} (Alpha: {alpha:.4f}) -> Global v{new_version:.1f} (Acc: {g_acc:.2f}%)")
-                
-                # 위성 동기화
-                current_local_wrapper = PyTorchModel.from_model(temp_model, version=new_version)
-                self.satellite_models[sat_id] = current_local_wrapper
+                    train_loader = DataLoader(
+                        dataset, 
+                        batch_size=128, 
+                        shuffle=True, 
+                        num_workers=8,
+                        pin_memory=True
+                    )
+                    
+                    current_local_wrapper.to_device(temp_model, device='cpu')
+                    
+                    # 학습 (ResNet9 Scratch이므로 LR 0.005 사용)
+                    train_model(
+                        model=temp_model,
+                        global_state_dict=self.global_model_wrapper.model_state_dict,
+                        train_loader=train_loader,
+                        epochs=epochs,
+                        lr=0.005,
+                        device=self.device,
+                        sim_logger=None # 로그가 너무 많으면 None, 보고 싶으면 self.sim_logger
+                    )
+                    
+                    # 성능 기록
+                    acc, _ = self._evaluate_direct(
+                        temp_model, self.val_loader, sat_id, current_local_wrapper.version, "LOCAL_TRAIN"
+                    )
+                    self.satellite_performances[sat_id] = acc
+                    
+                    # 모델 상태 저장 (버전은 그대로, 상태만 업데이트)
+                    current_local_wrapper = PyTorchModel.from_model(temp_model, version=current_local_wrapper.version)
+                    self.satellite_models[sat_id] = current_local_wrapper
+                    
+                    sat_status[sat_id] = 'TRAINED' # 이제 지상국 만나면 업로드할 준비 완료
+                    self.sim_logger.info(f"   ✅ Trained (Acc: {acc:.2f}%). Ready to Upload.")
 
         self.sim_logger.info("\n=== 시뮬레이션 종료 ===")
         self.sim_logger.info(f"Final Global Model Accuracy: {self.best_acc:.2f}%")
+
 
 def main():
     try:
