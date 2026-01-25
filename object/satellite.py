@@ -246,10 +246,11 @@ class Satellite_Manager:
             # [이벤트 1] 지상국 접속 (모델 다운로드 OR 결과 업로드)
             # -----------------------------------------------------------
             if event['type'] == 'GS_AGGREGATE':
-                self.sim_logger.info(f"\n📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} : 지상국 접속")
+                self.sim_logger.info(f"📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} : 지상국 접속")
 
                 # Case A: 학습된 모델이 있어서 제출(Upload) 하러 옴
                 # 조건: 상태가 TRAINED이고, 가지고 있는 모델이 현재 글로벌 모델(의 파생)일 때
+                self.sim_logger.info(f"current_local_wrapper.version: {current_local_wrapper.version}, global_version: {global_version}")
                 if sat_status[sat_id] == 'TRAINED' and current_local_wrapper.version == global_version:
                     self.sim_logger.info(f"   ⬆️ [SAT_{sat_id}] Uploading model to buffer...")
 
@@ -327,10 +328,10 @@ class Satellite_Manager:
                 # (동기식이므로 한 라운드에 한 번만 학습)
                 if current_local_wrapper.version == self.global_model_wrapper.version and sat_status[sat_id] == 'IDLE':
                     
-                    self.sim_logger.info(f"\n📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} Local Training (Round {int(current_local_wrapper.version)})")
+                    self.sim_logger.info(f"📡 [Time: {event['start_time'].strftime('%m-%d %H:%M')}] SAT_{sat_id} Local Training (Ver {(current_local_wrapper.version)})")
                     
                     # 학습 설정
-                    epochs = 5  # 로컬 에포크 (CIFAR-10 동기식은 5~10회 추천)
+                    epochs = LOCAL_EPOCHS  # 로컬 에포크 (CIFAR-10 동기식은 5~10회 추천)
                     loader_idx = sat_id % len(self.client_subsets)
                     dataset = self.client_subsets[loader_idx]
                     
@@ -339,7 +340,8 @@ class Satellite_Manager:
                         batch_size=128, 
                         shuffle=True, 
                         num_workers=8,
-                        pin_memory=True
+                        pin_memory=True,
+                        persistent_workers=False
                     )
                     
                     current_local_wrapper.to_device(temp_model, device='cpu')
@@ -352,17 +354,24 @@ class Satellite_Manager:
                         epochs=epochs,
                         lr=0.005,
                         device=self.device,
-                        sim_logger=None # 로그가 너무 많으면 None, 보고 싶으면 self.sim_logger
+                        sim_logger=self.sim_logger # 로그가 너무 많으면 None, 보고 싶으면 self.sim_logger
                     )
-                    
+
                     # 성능 기록
-                    acc, _ = self._evaluate_direct(
-                        temp_model, self.val_loader, sat_id, current_local_wrapper.version, "LOCAL_TRAIN"
+                    acc, loss = self._evaluate_direct(
+                        temp_model,
+                        self.val_loader,
+                        sat_id=sat_id,
+                        version=current_local_wrapper.version,
+                        stage="LOCAL_TRAIN"
                     )
                     self.satellite_performances[sat_id] = acc
                     
                     # 모델 상태 저장 (버전은 그대로, 상태만 업데이트)
-                    current_local_wrapper = PyTorchModel.from_model(temp_model, version=current_local_wrapper.version)
+                    current_local_wrapper = PyTorchModel.from_model(
+                        temp_model,
+                        version=current_local_wrapper.version
+                    )
                     self.satellite_models[sat_id] = current_local_wrapper
                     
                     sat_status[sat_id] = 'TRAINED' # 이제 지상국 만나면 업로드할 준비 완료
