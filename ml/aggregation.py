@@ -29,41 +29,25 @@ def calculate_mixing_weight(local_ver, global_ver, local_acc, global_acc,
     """
     레거시 코드의 동적 가중치 계산 로직 이식
     """
-    BASE_ALPHA = 0.1  # 기본 반영 비율
+    BASE_ALPHA = 0.5  # 기본 반영 비율
     
     # 1. Staleness (버전 차이) 패널티
     staleness = max(0, global_ver - local_ver)
-    staleness_factor = 1.0 / (1.0 + staleness)
+    staleness_factor = 1.0 / (1.0 + staleness * 0.5)
 
-    # 2. Performance (성능) 가중치
-    # 글로벌 모델보다 성능이 좋으면 더 많이 반영
-    if global_acc > 0:
-        perf_ratio = local_acc / global_acc
-        performance_factor = np.clip(perf_ratio, 0.5, 2.0)
-    else:
-        performance_factor = 1.0
+    performance_factor = 1.0
 
     # 3. Data Volume (데이터 양) 가중치
     if avg_data_count > 0:
         data_ratio = local_data_count / avg_data_count
-        data_factor = np.clip(data_ratio, 0.05, 10.0)
+        data_factor = np.clip(data_ratio, 0.5, 1.5)
     else:
         data_factor = 1.0
 
     # 최종 Alpha 계산
     final_alpha = BASE_ALPHA * staleness_factor * performance_factor * data_factor
 
-    # 글로벌 모델 성능에 따른 안전장치 (성능이 이미 높으면 조금만 반영)
-    if global_acc > 80.0:
-        MAX_ALPHA_LIMIT = 0.1
-    elif global_acc > 60.0:
-        MAX_ALPHA_LIMIT = 0.3
-    else:
-        MAX_ALPHA_LIMIT = 0.5
-        
-    final_alpha = min(final_alpha, MAX_ALPHA_LIMIT)
-    
-    return final_alpha, staleness_factor, performance_factor, data_factor
+    return min(final_alpha, 0.6), staleness_factor, performance_factor, data_factor
 
 def weighted_update(global_state_dict: OrderedDict, local_state_dict: OrderedDict, alpha: float, device: str = 'cpu') -> OrderedDict:
     """

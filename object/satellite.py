@@ -317,7 +317,7 @@ class Satellite_Manager:
                     avg_data_count=self.avg_data_count
                 )
 
-                alpha = 0.2
+                # alpha = 0.2
 
                 new_state_dict = weighted_update(
                     self.global_model_wrapper.model_state_dict,
